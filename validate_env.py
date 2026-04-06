@@ -167,7 +167,7 @@ def check_yaml():
     assert y.get("spec_version") == 1
     assert y.get("name") == "energy_grid_env"
     assert y.get("runtime") == "fastapi"
-    assert y.get("port") == 8000
+    assert y.get("port") == 7860
     return f"name={y['name']} runtime={y['runtime']} port={y['port']}"
 
 try:

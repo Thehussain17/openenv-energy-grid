@@ -2,7 +2,7 @@
 from client import EnergyGridEnv
 from models import GridAction
 
-env = EnergyGridEnv(base_url="http://localhost:8000").sync()
+env = EnergyGridEnv(base_url="http://localhost:7860").sync()
 with env:
     # ── reset ──────────────────────────────────────────────────────────
     result = env.reset(seed=42)

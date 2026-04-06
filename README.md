@@ -5,7 +5,7 @@ colorFrom: yellow
 colorTo: red
 sdk: docker
 pinned: false
-app_port: 8000
+app_port: 7860
 base_path: /web
 tags:
   - openenv
@@ -108,7 +108,7 @@ cd energy_grid_env
 pip install openenv-core[core]>=0.2.2 numpy openai uvicorn fastapi
 
 # Start the server
-uvicorn server.app:app --host 0.0.0.0 --port 8000
+uvicorn server.app:app --host 0.0.0.0 --port 7860
 
 # In another terminal — run a quick test
 python - <<'EOF'
@@ -116,7 +116,7 @@ import sys; sys.path.insert(0, ".")
 from client import EnergyGridEnv
 from models import GridAction
 
-env = EnergyGridEnv(base_url="http://localhost:8000").sync()
+env = EnergyGridEnv(base_url="http://localhost:7860").sync()
 with env:
     result = env.reset(seed=42)
     print("Reset:", result.observation.time_of_day, "h | demand:", result.observation.demand, "kW")
@@ -132,10 +132,10 @@ EOF
 docker build -t energy-grid-env:latest -f server/Dockerfile .
 
 # Run
-docker run -p 8000:8000 energy-grid-env:latest
+docker run -p 7860:7860 energy-grid-env:latest
 
 # Health check
-curl http://localhost:8000/health
+curl http://localhost:7860/health
 # → {"status":"healthy"}
 ```
 

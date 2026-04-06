@@ -5,7 +5,7 @@ Uses the OpenEnv WebSocket-based EnvClient with a synchronous wrapper
 so callers (including inference.py) can use it without async/await.
 
 Example (sync):
-    env = EnergyGridEnv(base_url="http://localhost:8000").sync()
+    env = EnergyGridEnv(base_url="http://localhost:7860").sync()
     with env:
         result = env.reset()
         obs = result.observation
@@ -31,7 +31,7 @@ class EnergyGridEnv(EnvClient[GridAction, GridObservation, GridState]):
     Use the `.sync()` method for synchronous access (e.g., in inference.py).
 
     Example (sync wrapper):
-        env = EnergyGridEnv(base_url="http://localhost:8000").sync()
+        env = EnergyGridEnv(base_url="http://localhost:7860").sync()
         with env:
             result = env.reset(seed=42)
             for _ in range(24):
@@ -41,7 +41,7 @@ class EnergyGridEnv(EnvClient[GridAction, GridObservation, GridState]):
                     break
 
     Example (async):
-        async with EnergyGridEnv(base_url="http://localhost:8000") as env:
+        async with EnergyGridEnv(base_url="http://localhost:7860") as env:
             result = await env.reset(seed=42)
             result = await env.step(GridAction(decision="buy_external", magnitude=0.3))
     """

@@ -35,7 +35,7 @@ HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
 client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
 
 # ── Server management ──────────────────────────────────────────────────────────
-_SERVER_URL = "http://localhost:8000"
+_SERVER_URL = "http://localhost:7860"
 _server_proc: subprocess.Popen | None = None
 
 
@@ -44,7 +44,7 @@ def _start_server() -> None:
     global _server_proc
     _server_proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "server.app:app",
-         "--host", "0.0.0.0", "--port", "8000"],
+         "--host", "0.0.0.0", "--port", "7860"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         cwd=os.path.dirname(os.path.abspath(__file__)),

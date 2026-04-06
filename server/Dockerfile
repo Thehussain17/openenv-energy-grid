@@ -1,5 +1,5 @@
 # Multi-stage build for the Energy Grid Environment
-# Compatible with HF Spaces (sdk: docker, app_port: 8000, tags: openenv)
+# Compatible with HF Spaces (sdk: docker, app_port: 7860, tags: openenv)
 #
 # IMPORTANT: The openenv-base image uses Python 3.11 (python:3.11-slim).
 # Our pyproject.toml requires python >=3.10, so 3.11 is fully compatible.
@@ -48,11 +48,11 @@ ENV PYTHONPATH="/app/env:$PYTHONPATH"
 ENV PYTHONUNBUFFERED=1
 
 # Expose the server port
-EXPOSE 8000
+EXPOSE 7860
 
 # Health check — server must respond within 15 s of startup
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:7860/health || exit 1
 
 # Launch the FastAPI / uvicorn server
-CMD ["sh", "-c", "cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "cd /app/env && uvicorn server.app:app --host 0.0.0.0 --port 7860"]
