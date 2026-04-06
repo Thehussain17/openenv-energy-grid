@@ -28,9 +28,9 @@ from typing import Any
 from openai import OpenAI
 
 # ── Environment variables ──────────────────────────────────────────────────────
-API_BASE_URL: str = os.environ["API_BASE_URL"]
-MODEL_NAME: str = os.environ["MODEL_NAME"]
-HF_TOKEN: str = os.environ["HF_TOKEN"]
+API_BASE_URL: str = os.environ.get("API_BASE_URL", "https://api-inference.huggingface.co/v1")
+MODEL_NAME: str = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
 
 client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
 
