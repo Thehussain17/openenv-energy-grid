@@ -2,7 +2,7 @@
 title: Energy Grid Environment Server
 emoji: ⚡
 colorFrom: yellow
-colorTo: orange
+colorTo: red
 sdk: docker
 pinned: false
 app_port: 8000
