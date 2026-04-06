@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-energy-grid-env"
+version = "1.0.0"
+description = "Energy Grid Dispatch environment for OpenEnv — 24-hour microgrid management"
+requires-python = ">=3.10"
+dependencies = [
+    # Core OpenEnv runtime (FastAPI server + WebSocket client)
+    "openenv-core[core]>=0.2.2",
+    # Environment-specific
+    "numpy>=1.24.0",
+    "openai>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "httpx>=0.24.0",
+]
+
+[project.scripts]
+# Required by `openenv validate` — enables: uv run --project . server
+server = "energy_grid_env.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["energy_grid_env", "energy_grid_env.server"]
+package-dir = { "energy_grid_env" = ".", "energy_grid_env.server" = "server" }
