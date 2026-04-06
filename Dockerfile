@@ -1,46 +1,23 @@
 # Compatible with HF Spaces (sdk: docker, app_port: 7860, tags: openenv)
 
-# Stage 1: Builder
-FROM python:3.11-slim AS builder
-
-WORKDIR /app
-
-# Install git, curl
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends git curl && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install uv using the official docker image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
-# Copy project files
-COPY . /app/env
-WORKDIR /app/env
-
-# Install dependencies using uv
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --python 3.11 --no-frozen --no-editable
-
-# Stage 2: Runtime
 FROM python:3.11-slim
 
-WORKDIR /app
+WORKDIR /app/env
 
 # Install curl for HEALTHCHECK
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy virtualenv and project code from builder
-COPY --from=builder /app/env/.venv /app/.venv
-COPY --from=builder /app/env /app/env
+# Copy project files
+COPY . .
 
-# Set environment paths
-ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONPATH="/app/env:$PYTHONPATH"
+# Install dependencies using standard built-in pip
+# This reads pyproject.toml automagically securely across any architecture
+RUN pip install --no-cache-dir .
+
+# Set environment
 ENV PYTHONUNBUFFERED=1
-
-WORKDIR /app/env
 
 EXPOSE 7860
 
