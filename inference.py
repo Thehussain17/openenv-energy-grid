@@ -163,11 +163,10 @@ _TASK1_THRESHOLD_COST_RS = 0.0  # computed dynamically after reset
 
 
 def _task1_grader(actual_cost: float, threshold_cost: float) -> float:
-    """score = max(0, 1 - actual_cost / threshold_cost); clamped [0, 1]."""
     if threshold_cost <= 0:
-        return 1.0
-    score = max(0.0, 1.0 - actual_cost / threshold_cost)
-    return round(min(1.0, score), 4)
+        return 0.999
+    score = 1.0 - actual_cost / threshold_cost
+    return round(max(0.001, min(0.999, score)), 4)
 
 
 def run_task1(episode: int = 1) -> tuple[float, int]:
@@ -230,11 +229,10 @@ _TASK2_SPIKE_HOURS = [11, 19]
 
 
 def _task2_grader(blackout_steps: int, blackout_events: int, total_steps: int) -> float:
-    """score = 1.0 - (blackout_steps / total_steps) - 0.2 × events; clamped [0, 1]."""
     if total_steps == 0:
-        return 0.0
+        return 0.001
     raw = 1.0 - (blackout_steps / total_steps) - 0.2 * blackout_events
-    return round(max(0.0, min(1.0, raw)), 4)
+    return round(max(0.001, min(0.999, raw)), 4)
 
 
 def run_task2(episode: int = 1) -> tuple[float, int]:
@@ -296,16 +294,12 @@ def _task3_grader(
     stability_score: float,
     cost_score: float,
 ) -> float:
-    """
-    composite = 0.4 × renewable_fraction + 0.4 × stability_score + 0.2 × cost_score
-    All inputs must be in [0, 1]. Output clamped to [0, 1].
-    """
     composite = (
         0.4 * renewable_fraction
         + 0.4 * stability_score
         + 0.2 * cost_score
     )
-    return round(max(0.0, min(1.0, composite)), 4)
+    return round(max(0.001, min(0.999, composite)), 4)
 
 
 def run_task3(episode: int = 1) -> tuple[float, int]:
