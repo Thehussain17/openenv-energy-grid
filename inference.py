@@ -1,18 +1,18 @@
 """
-inference.py — Energy Grid Environment LLM Baseline Agent.
+inference.py — Energy Grid Environment v2 LLM Baseline Agent.
 
-Runs all 3 tasks using an LLM (via OpenAI-compatible API) as the dispatch agent.
-The LLM observes the grid state and outputs structured GridAction decisions.
+Runs all 3 tasks using a rule-based heuristic (with LLM opt-in via env vars).
+Actions are now 4-dim MultiDiscrete: [bess, hospital, industrial, residential].
 
-Required environment variables:
-    API_BASE_URL  — OpenAI-compatible API endpoint
-    MODEL_NAME    — Model identifier (e.g. "Qwen/Qwen2.5-72B-Instruct")
-    HF_TOKEN      — API key / HF token
+Required env vars (optional — heuristic used if absent / API errors):
+    API_BASE_URL  — OpenAI-compatible endpoint
+    MODEL_NAME    — Model identifier
+    HF_TOKEN      — API key
 
-Log format (stdout only, no deviation):
-    [START] task=<task_name> episode=<n>
-    [STEP] step=<n> action=<action> reward=<float> done=<bool>
-    [END] task=<task_name> score=<float> steps=<n>
+Log format (stdout, required by OpenEnv validator):
+    [START] task=<name> episode=<n>
+    [STEP]  step=<n> action=[b,h,i,r] reward=<float> done=<bool>
+    [END]   task=<name> score=<float> steps=<n>
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ import json
 import os
 import sys
 import time
-import threading
 import subprocess
 from typing import Any
 
@@ -29,10 +28,10 @@ from openai import OpenAI
 
 # ── Environment variables ──────────────────────────────────────────────────────
 API_BASE_URL: str = os.environ.get("API_BASE_URL", "https://api-inference.huggingface.co/v1")
-MODEL_NAME: str = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
+MODEL_NAME:   str = os.environ.get("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN:     str = os.environ.get("HF_TOKEN", "")
 
-client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
+client = OpenAI(api_key=HF_TOKEN or "placeholder", base_url=API_BASE_URL)
 
 # ── Server management ──────────────────────────────────────────────────────────
 _SERVER_URL = "http://localhost:7860"
@@ -40,7 +39,6 @@ _server_proc: subprocess.Popen | None = None
 
 
 def _start_server() -> None:
-    """Start the uvicorn server in a background process."""
     global _server_proc
     _server_proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "server.app:app",
@@ -49,15 +47,14 @@ def _start_server() -> None:
         stderr=subprocess.DEVNULL,
         cwd=os.path.dirname(os.path.abspath(__file__)),
     )
-    # Wait for the server to be ready
-    import urllib.request, urllib.error
+    import urllib.request
     for _ in range(30):
         try:
             urllib.request.urlopen(f"{_SERVER_URL}/health", timeout=2)
             return
         except Exception:
             time.sleep(1)
-    raise RuntimeError("Server did not become ready in 30 s")
+    raise RuntimeError("Server did not become ready in 30s")
 
 
 def _stop_server() -> None:
@@ -71,81 +68,8 @@ def _stop_server() -> None:
         _server_proc = None
 
 
-# ── LLM action selection ───────────────────────────────────────────────────────
-_SYSTEM_PROMPT = """You are an expert energy grid dispatch operator.
-Given the current grid observation, output EXACTLY one JSON object (no markdown, no explanation):
-{
-  "decision": "<one of: battery_discharge | battery_charge | buy_external | curtail_load | idle>",
-  "magnitude": <float between 0.0 and 1.0>
-}
-
-Decision guide:
-- If demand >> supply and battery_soc > 0.2: use battery_discharge with magnitude 0.6–0.9
-- If demand >> supply and battery_soc <= 0.2: use buy_external with magnitude 0.5–0.8
-- If supply >> demand and battery_soc < 0.8: use battery_charge with magnitude 0.4–0.7
-- If electricity_price is very high (>7) and you must buy: minimize magnitude
-- If renewable_fraction is already high and supply > demand: use idle
-- Avoid blackouts at all costs (supply must meet demand)
-- Prefer renewables over external purchases
-"""
-
-
-def _llm_action(obs: dict) -> dict:
-    """Ask the LLM for a dispatch action given the observation dict."""
-    user_msg = (
-        f"Grid state:\n"
-        f"  Hour: {obs['time_of_day']:02d}:00\n"
-        f"  Solar: {obs['solar_output']:.1f} kW | Wind: {obs['wind_output']:.1f} kW\n"
-        f"  Demand: {obs['demand']:.1f} kW\n"
-        f"  Battery SoC: {obs['battery_soc']:.2%}\n"
-        f"  Grid frequency: {obs['grid_frequency']:.3f} Hz\n"
-        f"  Electricity price: ₹{obs['electricity_price']:.1f}/kWh\n"
-        f"  Renewable fraction: {obs['renewable_fraction']:.2%}\n"
-        f"\nWhat is your dispatch decision?"
-    )
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            max_tokens=64,
-            temperature=0.1,
-        )
-        raw = response.choices[0].message.content.strip()
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        action = json.loads(raw)
-        decision = str(action.get("decision", "idle"))
-        magnitude = float(action.get("magnitude", 0.5))
-        # Validate decision
-        valid = {"battery_discharge", "battery_charge", "buy_external", "curtail_load", "idle"}
-        if decision not in valid:
-            decision = "idle"
-        magnitude = max(0.0, min(1.0, magnitude))
-        return {"decision": decision, "magnitude": magnitude}
-    except Exception:
-        # Fallback heuristic: if supply < demand → buy, else idle
-        supply = obs.get("solar_output", 0) + obs.get("wind_output", 0)
-        demand = obs.get("demand", 250)
-        soc = obs.get("battery_soc", 0.5)
-        if supply < demand * 0.9:
-            if soc > 0.25:
-                return {"decision": "battery_discharge", "magnitude": 0.7}
-            return {"decision": "buy_external", "magnitude": 0.6}
-        elif supply > demand * 1.1 and soc < 0.8:
-            return {"decision": "battery_charge", "magnitude": 0.5}
-        return {"decision": "idle", "magnitude": 0.0}
-
-
-# ── Client wrapper ─────────────────────────────────────────────────────────────
-
+# ── Client helper ──────────────────────────────────────────────────────────────
 def _make_env():
-    """Return a sync env client connected to the local server."""
     try:
         from client import EnergyGridEnv
     except ImportError:
@@ -154,134 +78,201 @@ def _make_env():
     return EnergyGridEnv(base_url=_SERVER_URL).sync()
 
 
+# ── Action helpers ─────────────────────────────────────────────────────────────
+
+def _action_from_dict(d: dict):
+    try:
+        from models import GridAction
+    except ImportError:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from models import GridAction
+    return GridAction(
+        bess=int(d.get("bess", 0)),
+        hospital=int(d.get("hospital", 0)),
+        industrial=int(d.get("industrial", 0)),
+        residential=int(d.get("residential", 0)),
+    )
+
+
+def _heuristic_action(obs) -> dict:
+    """
+    Rule-based fallback using the normalized observation vector.
+
+    Hospital is always served at 100% (action=0).
+    BESS: discharge if supply looks tight (solar+wind low); charge if abundant.
+    Industrial/Residential: shed when swans are active or frequency is off.
+    """
+    soc         = obs.battery_soc
+    solar       = obs.solar_norm       # 0-1
+    wind        = obs.wind_norm        # 0-1
+    freq_norm   = obs.frequency_norm   # 0-1 (0.5 = 50 Hz)
+    solar_swan  = obs.solar_swan_active > 0.5
+    wind_swan   = obs.wind_swan_active  > 0.5
+    shed_over   = obs.cumulative_shed_ratio_norm > 1.0
+    any_swan    = solar_swan or wind_swan
+
+    # BESS decision
+    renewable_available = solar + wind   # rough proxy, both normalized 0-1
+    tight = renewable_available < 0.4
+    abundant = renewable_available > 0.7 and freq_norm > 0.55
+
+    if tight and soc > 0.25:
+        bess = 4   # Discharge 50%
+    elif tight and soc <= 0.25:
+        bess = 0   # Idle — rely on import
+    elif abundant and soc < 0.85:
+        bess = 2   # Charge 50%
+    else:
+        bess = 0   # Idle
+
+    # During swans: discharge harder if possible
+    if any_swan and soc > 0.30:
+        bess = 5   # Discharge 100%
+
+    # Hospital: always 100% (unless absolutely critical BESS < 10%)
+    hospital = 0
+
+    # Industrial: shed during swans or frequency deviation
+    freq_bad = abs(freq_norm - 0.5) > 0.15
+    if shed_over:
+        industrial = 0   # already over budget, don't add more shed
+    elif any_swan or freq_bad:
+        industrial = 2   # 80%
+    else:
+        industrial = 0   # 100%
+
+    # Residential: shed more aggressively during stress
+    if shed_over:
+        residential = 0
+    elif any_swan and freq_bad:
+        residential = 3   # 60%
+    elif any_swan or freq_bad:
+        residential = 2   # 70%
+    else:
+        residential = 0   # 100%
+
+    return {"bess": bess, "hospital": hospital,
+            "industrial": industrial, "residential": residential}
+
+
+# ── LLM action selection ───────────────────────────────────────────────────────
+
+_SYSTEM_PROMPT = """You are an expert energy grid dispatch operator managing a 500kW microgrid.
+Given the normalized grid observation vector, output EXACTLY one JSON object (no markdown):
+{
+  "bess":        <int 0-5>,  // 0=Idle,1=Charge25%,2=Charge50%,3=Dis25%,4=Dis50%,5=Dis100%
+  "hospital":    <int 0-1>,  // 0=100% supply, 1=98% (emergency only)
+  "industrial":  <int 0-3>,  // 0=100%, 1=90%, 2=80%, 3=70%
+  "residential": <int 0-3>   // 0=100%, 1=85%, 2=70%, 3=60%
+}
+Rules: Hospital MUST be served >=95% always (3 consecutive failures = episode termination).
+During black swans, shed industrial/residential aggressively and discharge BESS."""
+
+
+def _llm_action(obs) -> dict:
+    vec = obs.to_vector() if hasattr(obs, "to_vector") else []
+    user_msg = (
+        f"Obs vector (18 values): {[round(v, 3) for v in vec]}\n"
+        f"solar_swan={obs.solar_swan_active:.0f} wind_swan={obs.wind_swan_active:.0f} "
+        f"soc={obs.battery_soc:.2f} freq_norm={obs.frequency_norm:.3f}\n"
+        f"hosp_ratio={obs.hosp_served_ratio:.3f} ind_ratio={obs.ind_served_ratio:.3f} "
+        f"res_ratio={obs.res_served_ratio:.3f}\nWhat is your dispatch decision?"
+    )
+    try:
+        if not HF_TOKEN:
+            raise ValueError("No HF_TOKEN — using heuristic")
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user",   "content": user_msg},
+            ],
+            max_tokens=64,
+            temperature=0.1,
+        )
+        raw = response.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1].lstrip("json").strip()
+        action = json.loads(raw)
+        return {
+            "bess":        max(0, min(5, int(action.get("bess", 0)))),
+            "hospital":    max(0, min(1, int(action.get("hospital", 0)))),
+            "industrial":  max(0, min(3, int(action.get("industrial", 0)))),
+            "residential": max(0, min(3, int(action.get("residential", 0)))),
+        }
+    except Exception:
+        return _heuristic_action(obs)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# Task 1 — Cost Minimization (8-hour episode, stable demand)
+# Task 1 — Cost Minimization (8-hour, stable conditions)
 # ══════════════════════════════════════════════════════════════════════════════
-_TASK1_MAX_HOURS = 8
-# Threshold cost: if agent bought 50% of max external capacity every hour
-_TASK1_THRESHOLD_COST_RS = 0.0  # computed dynamically after reset
-
-
-def _task1_grader(actual_cost: float, threshold_cost: float) -> float:
-    if threshold_cost <= 0:
-        return 0.999
-    score = 1.0 - actual_cost / threshold_cost
-    return round(max(0.001, min(0.999, score)), 4)
-
 
 def run_task1(episode: int = 1) -> tuple[float, int]:
-    """
-    Task 1: Cost Minimization over 8 hours with stable demand.
-    Returns (score, steps_taken).
-    """
     print(f"[START] task=cost_minimization episode={episode}")
-
     env = _make_env()
     with env:
         result = env.reset(seed=42)
         obs = result.observation
 
-        # Threshold cost: buying 400 kW × 50% each hour at TOU price
-        from server.energy_grid_environment import _TOU_PRICE, MAX_BUY_KW
-        threshold_cost = sum(
-            _TOU_PRICE[h] * (MAX_BUY_KW * 0.5) * 1e-3
-            for h in range(_TASK1_MAX_HOURS)
-        )
-
-        actual_cost = 0.0
+        # Threshold: importing 30% of MAX_IMPORT_KW for 8h at avg ₹5/kWh
+        threshold_cost = 500.0 * 0.30 * 8 * 0.005   # kW × h × ₹/kWh (×1e-3 factor baked in)
         steps = 0
 
-        for step in range(_TASK1_MAX_HOURS):
-            obs_dict = obs.model_dump()
-            action_dict = _llm_action(obs_dict)
-            from models import GridAction
-            action = GridAction(**action_dict)
-
+        for step in range(8):
+            action = _action_from_dict(_llm_action(obs))
             result = env.step(action)
-            obs = result.observation
+            obs    = result.observation
             reward = result.reward or 0.0
-            done = result.done
+            done   = result.done
 
-            # Track cost from metadata
-            meta = obs.metadata or {}
-            actual_cost = float(meta.get("total_cost", actual_cost))
+            print(f"[STEP] step={step+1} action=[{action.bess},{action.hospital},"
+                  f"{action.industrial},{action.residential}]"
+                  f" reward={reward:.4f} done={done}")
             steps += 1
-
-            print(
-                f"[STEP] step={step+1} action={action.decision}({action.magnitude:.2f})"
-                f" reward={reward:.4f} done={done}"
-            )
             if done:
                 break
 
-        # Override total_cost from state
         state = env.state()
         actual_cost = state.total_cost
-        score = _task1_grader(actual_cost, threshold_cost)
+        score = max(0.0, min(1.0, round(1.0 - actual_cost / max(threshold_cost, 1e-9), 4)))
         print(f"[END] task=cost_minimization score={score:.4f} steps={steps}")
         return score, steps
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Task 2 — Blackout Prevention (24-hour, 2 demand spikes)
+# Task 2 — Hospital Resilience (24-hour, black swans enabled)
 # ══════════════════════════════════════════════════════════════════════════════
-_TASK2_SPIKE_HOURS = [11, 19]
-
-
-def _task2_grader(blackout_steps: int, blackout_events: int, total_steps: int) -> float:
-    if total_steps == 0:
-        return 0.001
-    raw = 1.0 - (blackout_steps / total_steps) - 0.2 * blackout_events
-    return round(max(0.001, min(0.999, raw)), 4)
-
 
 def run_task2(episode: int = 1) -> tuple[float, int]:
-    """
-    Task 2: Blackout Prevention over 24 hours with 2 amplified demand spikes.
-    Returns (score, steps_taken).
-    """
-    print(f"[START] task=blackout_prevention episode={episode}")
-
+    print(f"[START] task=hospital_resilience episode={episode}")
     env = _make_env()
     with env:
-        result = env.reset(
-            seed=123,
-            demand_spike_hours=_TASK2_SPIKE_HOURS,
-        )
+        result = env.reset(seed=123)
         obs = result.observation
-
-        prev_blackout_count = 0
-        blackout_events = 0
         steps = 0
 
         for step in range(24):
-            obs_dict = obs.model_dump()
-            action_dict = _llm_action(obs_dict)
-            from models import GridAction
-            action = GridAction(**action_dict)
-
+            action = _action_from_dict(_llm_action(obs))
             result = env.step(action)
-            obs = result.observation
+            obs    = result.observation
             reward = result.reward or 0.0
-            done = result.done
+            done   = result.done
 
-            meta = obs.metadata or {}
-            current_bc = int(meta.get("blackout_count", prev_blackout_count))
-            if current_bc > prev_blackout_count:
-                blackout_events += current_bc - prev_blackout_count
-            prev_blackout_count = current_bc
+            print(f"[STEP] step={step+1} action=[{action.bess},{action.hospital},"
+                  f"{action.industrial},{action.residential}]"
+                  f" reward={reward:.4f} done={done}")
             steps += 1
-
-            print(
-                f"[STEP] step={step+1} action={action.decision}({action.magnitude:.2f})"
-                f" reward={reward:.4f} done={done}"
-            )
             if done:
                 break
 
         state = env.state()
-        score = _task2_grader(state.blackout_count, blackout_events, steps)
-        print(f"[END] task=blackout_prevention score={score:.4f} steps={steps}")
+        hosp_fail  = state.hospital_failure_steps
+        terminal   = state.hospital_terminal_triggered
+        # Score: 1 - (fail_steps/24) - 0.3 * terminal
+        raw = 1.0 - hosp_fail / max(steps, 1) - (0.3 if terminal else 0.0)
+        score = round(max(0.0, min(1.0, raw)), 4)
+        print(f"[END] task=hospital_resilience score={score:.4f} steps={steps}")
         return score, steps
 
 
@@ -289,92 +280,52 @@ def run_task2(episode: int = 1) -> tuple[float, int]:
 # Task 3 — Renewable Maximization (24-hour, full stochastic)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _task3_grader(
-    renewable_fraction: float,
-    stability_score: float,
-    cost_score: float,
-) -> float:
-    composite = (
-        0.4 * renewable_fraction
-        + 0.4 * stability_score
-        + 0.2 * cost_score
-    )
-    return round(max(0.001, min(0.999, composite)), 4)
-
-
 def run_task3(episode: int = 1) -> tuple[float, int]:
-    """
-    Task 3: Renewable Maximization over 24 hours under stochastic conditions.
-    Returns (score, steps_taken).
-    """
     print(f"[START] task=renewable_maximization episode={episode}")
-
     env = _make_env()
     with env:
         result = env.reset(seed=777)
         obs = result.observation
-
-        total_renewable_fraction = 0.0
+        total_renew_served = 0.0
         steps = 0
 
         for step in range(24):
-            obs_dict = obs.model_dump()
-            action_dict = _llm_action(obs_dict)
-            from models import GridAction
-            action = GridAction(**action_dict)
-
+            action = _action_from_dict(_llm_action(obs))
             result = env.step(action)
-            obs = result.observation
+            obs    = result.observation
             reward = result.reward or 0.0
-            done = result.done
-
-            total_renewable_fraction += obs.renewable_fraction
+            done   = result.done
+            total_renew_served += obs.solar_norm + obs.wind_norm
             steps += 1
 
-            print(
-                f"[STEP] step={step+1} action={action.decision}({action.magnitude:.2f})"
-                f" reward={reward:.4f} done={done}"
-            )
+            print(f"[STEP] step={step+1} action=[{action.bess},{action.hospital},"
+                  f"{action.industrial},{action.residential}]"
+                  f" reward={reward:.4f} done={done}")
             if done:
                 break
 
         state = env.state()
+        avg_renew = (state.renewable_energy_used / max(steps, 1)) / (200 + 150)
+        stability = max(0.0, 1.0 - state.frequency_violation_steps / max(steps, 1))
+        shed_ratio = (state.total_energy_shed_kwh
+                      / max(state.total_energy_demanded_kwh, 1.0))
+        shed_score = max(0.0, 1.0 - shed_ratio / 0.20)
 
-        # Aggregate metrics
-        avg_renewable_fraction = total_renewable_fraction / max(steps, 1)
-        stability_score = max(
-            0.0,
-            1.0 - state.frequency_violation_steps / max(steps, 1),
-        )
-
-        # Budget cost: what a "fair" agent would spend (30% of max buy × TOU avg)
-        from server.energy_grid_environment import _TOU_PRICE, MAX_BUY_KW
-        budget_cost = sum(
-            _TOU_PRICE[h] * (MAX_BUY_KW * 0.3) * 1e-3
-            for h in range(24)
-        )
-        cost_score = max(0.0, 1.0 - state.total_cost / max(budget_cost, 1e-9))
-        cost_score = min(1.0, cost_score)
-
-        score = _task3_grader(
-            renewable_fraction=avg_renewable_fraction,
-            stability_score=stability_score,
-            cost_score=cost_score,
-        )
+        composite = (0.4 * min(1.0, avg_renew)
+                     + 0.4 * stability
+                     + 0.2 * shed_score)
+        score = round(max(0.0, min(1.0, composite)), 4)
         print(f"[END] task=renewable_maximization score={score:.4f} steps={steps}")
         return score, steps
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Main entry point
+# Main
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
     t0 = time.time()
-
-    # Start the environment server
     _start_server()
-
     try:
         scores: dict[str, float] = {}
 
@@ -382,20 +333,23 @@ def main() -> None:
         scores["cost_minimization"] = s1
 
         s2, st2 = run_task2(episode=1)
-        scores["blackout_prevention"] = s2
+        scores["hospital_resilience"] = s2
 
         s3, st3 = run_task3(episode=1)
         scores["renewable_maximization"] = s3
 
         elapsed = time.time() - t0
         print(f"\n{'='*60}")
-        print(f"  Energy Grid Baseline Results  ({elapsed:.0f}s)")
+        print(f"  Energy Grid v2 Baseline Results  ({elapsed:.0f}s)")
         print(f"{'='*60}")
+        thresholds = {"cost_minimization": 0.70,
+                      "hospital_resilience": 0.80,
+                      "renewable_maximization": 0.75}
         for task, score in scores.items():
-            status = "✓ PASS" if score >= 0.7 else "✗ FAIL"
+            thr = thresholds[task]
+            status = "✓ PASS" if score >= thr else "✗ FAIL"
             print(f"  {task:<28}  score={score:.4f}  {status}")
         print(f"{'='*60}")
-
     finally:
         _stop_server()
 
