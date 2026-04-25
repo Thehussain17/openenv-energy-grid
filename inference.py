@@ -108,6 +108,9 @@ def _heuristic_action_with_reasoning(obs) -> tuple[dict, str]:
     if tight and soc > 0.25:
         bess = 4
         reasoning_parts.append("Renewables are low, discharging BESS 50% to support load.")
+    elif freq_norm < 0.45 and soc > 0.15:
+        bess = 5 if soc > 0.4 else 4
+        reasoning_parts.append("Grid frequency dropping critically, discharging BESS to stabilize.")
     elif tight and soc <= 0.25:
         bess = 0
         reasoning_parts.append("Renewables are low but BESS SoC is critical, idling BESS.")

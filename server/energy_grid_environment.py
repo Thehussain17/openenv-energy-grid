@@ -306,7 +306,7 @@ class EnergyGridEnvironment(Environment[GridAction, GridObservation, GridState])
         total_supply = available_supply + p_import
 
         p_export = max(0.0, total_supply - total_served)
-        df = (p_gen + p_import - p_export - total_served) / self._virtual_inertia_m
+        df = (available_supply + p_import - p_export - total_served) / self._virtual_inertia_m
         self._grid_frequency = max(FREQ_MIN, min(FREQ_MAX, self._grid_frequency + df))
 
         renew_supplied = min(p_gen + bess_power_kw, total_supply)
