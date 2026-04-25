@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import random
 from collections import defaultdict
 
@@ -53,12 +54,32 @@ def generate_trajectories(
     val_output_file="grid_expert_sft_val.jsonl",
     val_ratio=0.1,
     seed=42,
+    max_oversample_ratio=4,
 ):
+    """
+    Collect expert trajectories and produce a class-balanced SFT dataset.
+
+    Balancing strategy: oversample rare classes (with replacement up to
+    `max_oversample_ratio × majority-class size`) rather than shrinking
+    the majority. This keeps the dataset large while still reducing the
+    bias toward the dominant action.
+
+    Parameters
+    ----------
+    num_episodes         : int   Number of environment episodes to roll out.
+    train_output_file    : str   Path for the train JSONL.
+    val_output_file      : str   Path for the validation JSONL.
+    val_ratio            : float Fraction of balanced dataset held out for val.
+    seed                 : int   RNG seed for reproducibility.
+    max_oversample_ratio : int   Rare classes are upsampled to at most
+                                 (majority_size // max_oversample_ratio).
+                                 Keeps oversampling sensible even if one
+                                 class has only 1 raw sample.
+    """
     print(f"Generating {num_episodes} expert SFT trajectories...")
     env = EnergyGridEnvironment()
     rng = random.Random(seed)
 
-    # Use equal scenario coverage to avoid scenario-class imbalance.
     scenarios = list(range(5))
     samples_by_action = defaultdict(list)
     seen_obs_action = set()
@@ -79,14 +100,14 @@ def generate_trajectories(
                 act_dict["residential"],
             )
 
-            # Skip near-duplicates to reduce memorization/overfitting risk.
             key = _obs_fingerprint(obs, action_tuple)
             if key not in seen_obs_action:
                 seen_obs_action.add(key)
                 prompt = _format_prompt(obs, rng)
                 completion = (
                     f"### Thought: {reasoning}\n"
-                    f"### Action: [{action_tuple[0]}, {action_tuple[1]}, {action_tuple[2]}, {action_tuple[3]}]"
+                    f"### Action: [{action_tuple[0]}, {action_tuple[1]}, "
+                    f"{action_tuple[2]}, {action_tuple[3]}]"
                 )
                 samples_by_action[action_tuple].append(
                     {
@@ -112,37 +133,51 @@ def generate_trajectories(
         raise RuntimeError("No samples generated.")
 
     class_sizes = {k: len(v) for k, v in samples_by_action.items()}
-    min_class_size = min(class_sizes.values())
-    print(f"Raw unique samples: {sum(class_sizes.values())} from {generated_steps} environment steps")
-    print(f"Action classes discovered: {len(class_sizes)}")
-    print(f"Balancing all classes to {min_class_size} samples each")
+    majority_size = max(class_sizes.values())
+    # Target: upsample minority classes toward majority, but cap growth so a
+    # class with 1 raw sample doesn't dominate through heavy repetition.
+    target_size = max(1, majority_size // max_oversample_ratio)
+
+    raw_total = sum(class_sizes.values())
+    print(f"Raw unique samples  : {raw_total} from {generated_steps} env steps")
+    print(f"Action classes      : {len(class_sizes)}")
+    print(f"Majority class size : {majority_size}  |  oversample target: {target_size}")
 
     balanced_rows_all = []
 
     for action_key, rows in sorted(samples_by_action.items()):
         rng.shuffle(rows)
-        balanced_rows = rows[:min_class_size]
-        balanced_rows_all.extend(balanced_rows)
+        n_raw = len(rows)
+        if n_raw >= target_size:
+            # Majority (or close to it): keep as-is, no shrinking.
+            balanced = rows[:]
+        else:
+            # Minority: oversample with replacement up to target_size.
+            repeats = math.ceil(target_size / n_raw)
+            pool = (rows * repeats)[:target_size]
+            rng.shuffle(pool)
+            balanced = pool
+
+        balanced_rows_all.extend(balanced)
         print(
-            f"  class {action_key}: raw={len(rows)} balanced={len(balanced_rows)} "
-            "included in pooled split"
+            f"  class {action_key}: raw={n_raw:4d}  "
+            f"after_balance={len(balanced):4d}"
         )
 
     rng.shuffle(balanced_rows_all)
-    val_count = int(len(balanced_rows_all) * val_ratio)
-    if balanced_rows_all and val_count == 0:
-        val_count = 1
-    if len(balanced_rows_all) > 1 and val_count >= len(balanced_rows_all):
-        val_count = len(balanced_rows_all) - 1
 
-    balanced_val = balanced_rows_all[:val_count]
+    val_count = int(len(balanced_rows_all) * val_ratio)
+    val_count = max(1, val_count)
+    val_count = min(val_count, len(balanced_rows_all) - 1)
+
+    balanced_val   = balanced_rows_all[:val_count]
     balanced_train = balanced_rows_all[val_count:]
 
     _write_jsonl(train_output_file, balanced_train)
     _write_jsonl(val_output_file, balanced_val)
 
-    print(f"Wrote train set: {len(balanced_train)} samples -> {train_output_file}")
-    print(f"Wrote val set:   {len(balanced_val)} samples -> {val_output_file}")
+    print(f"\nWrote train set : {len(balanced_train):5d} samples -> {train_output_file}")
+    print(f"Wrote val set   : {len(balanced_val):5d} samples -> {val_output_file}")
 
 
 if __name__ == "__main__":
@@ -152,6 +187,11 @@ if __name__ == "__main__":
     parser.add_argument("--val-output-file", type=str, default="grid_expert_sft_val.jsonl")
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--max-oversample-ratio", type=int, default=4,
+        help="Rare classes are oversampled up to majority_size // this value. "
+             "Lower = more aggressive upsampling. Default 4."
+    )
     args = parser.parse_args()
 
     generate_trajectories(
@@ -160,4 +200,5 @@ if __name__ == "__main__":
         val_output_file=args.val_output_file,
         val_ratio=args.val_ratio,
         seed=args.seed,
+        max_oversample_ratio=args.max_oversample_ratio,
     )
