@@ -1,13 +1,8 @@
 """
-inference.py — Energy Grid Environment v2 LLM Baseline Agent.
+inference.py — Energy Grid Environment v2.1 LLM Baseline Agent & SFT Generator.
 
 Runs all 3 tasks using a rule-based heuristic (with LLM opt-in via env vars).
 Actions are now 4-dim MultiDiscrete: [bess, hospital, industrial, residential].
-
-Required env vars (optional — heuristic used if absent / API errors):
-    API_BASE_URL  — OpenAI-compatible endpoint
-    MODEL_NAME    — Model identifier
-    HF_TOKEN      — API key
 
 Log format (stdout, required by OpenEnv validator):
     [START] task=<name> episode=<n>
@@ -22,6 +17,7 @@ import os
 import sys
 import time
 import subprocess
+import random
 from typing import Any
 
 from openai import OpenAI
@@ -36,7 +32,6 @@ client = OpenAI(api_key=HF_TOKEN or "placeholder", base_url=API_BASE_URL)
 # ── Server management ──────────────────────────────────────────────────────────
 _SERVER_URL = "http://localhost:7860"
 _server_proc: subprocess.Popen | None = None
-
 
 def _start_server() -> None:
     global _server_proc
@@ -56,7 +51,6 @@ def _start_server() -> None:
             time.sleep(1)
     raise RuntimeError("Server did not become ready in 30s")
 
-
 def _stop_server() -> None:
     global _server_proc
     if _server_proc is not None:
@@ -67,7 +61,6 @@ def _stop_server() -> None:
             _server_proc.kill()
         _server_proc = None
 
-
 # ── Client helper ──────────────────────────────────────────────────────────────
 def _make_env():
     try:
@@ -76,9 +69,6 @@ def _make_env():
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from client import EnergyGridEnv
     return EnergyGridEnv(base_url=_SERVER_URL).sync()
-
-
-# ── Action helpers ─────────────────────────────────────────────────────────────
 
 def _action_from_dict(d: dict):
     try:
@@ -93,72 +83,85 @@ def _action_from_dict(d: dict):
         residential=int(d.get("residential", 0)),
     )
 
-
-def _heuristic_action(obs) -> dict:
-    """
-    Rule-based fallback using the normalized observation vector.
-
-    Hospital is always served at 100% (action=0).
-    BESS: discharge if supply looks tight (solar+wind low); charge if abundant.
-    Industrial/Residential: shed when swans are active or frequency is off.
-    """
+def _heuristic_action_with_reasoning(obs) -> tuple[dict, str]:
     soc         = obs.battery_soc
-    solar       = obs.solar_norm       # 0-1
-    wind        = obs.wind_norm        # 0-1
-    freq_norm   = obs.frequency_norm   # 0-1 (0.5 = 50 Hz)
+    solar       = obs.solar_norm
+    wind        = obs.wind_norm
+    freq_norm   = obs.frequency_norm
     solar_swan  = obs.solar_swan_active > 0.5
     wind_swan   = obs.wind_swan_active  > 0.5
     shed_over   = obs.cumulative_shed_ratio_norm > 1.0
     any_swan    = solar_swan or wind_swan
 
-    # BESS decision
-    renewable_available = solar + wind   # rough proxy, both normalized 0-1
+    fc_solar_1h = obs.forecast_solar_1h
+    fc_wind_1h  = obs.forecast_wind_1h
+
+    reasoning_parts = []
+    
+    renewable_available = solar + wind
+    fc_renewable_1h = fc_solar_1h + fc_wind_1h
+
     tight = renewable_available < 0.4
     abundant = renewable_available > 0.7 and freq_norm > 0.55
+    will_be_tight = fc_renewable_1h < 0.4
 
     if tight and soc > 0.25:
-        bess = 4   # Discharge 50%
+        bess = 4
+        reasoning_parts.append("Renewables are low, discharging BESS 50% to support load.")
     elif tight and soc <= 0.25:
-        bess = 0   # Idle — rely on import
+        bess = 0
+        reasoning_parts.append("Renewables are low but BESS SoC is critical, idling BESS.")
     elif abundant and soc < 0.85:
-        bess = 2   # Charge 50%
+        bess = 2
+        reasoning_parts.append("Renewables are abundant, charging BESS 50%.")
+    elif not tight and will_be_tight and soc < 0.85:
+        bess = 1
+        reasoning_parts.append("Forecast predicts drop in renewables next hour, charging BESS 25% preemptively.")
     else:
-        bess = 0   # Idle
+        bess = 0
+        reasoning_parts.append("Grid is stable, BESS is idle.")
 
-    # During swans: discharge harder if possible
     if any_swan and soc > 0.30:
-        bess = 5   # Discharge 100%
+        bess = 5
+        reasoning_parts.append("Black swan detected! Discharging BESS fully.")
 
-    # Hospital: always 100% (unless absolutely critical BESS < 10%)
     hospital = 0
+    reasoning_parts.append("Hospital must be protected, holding at 100%.")
 
-    # Industrial: shed during swans or frequency deviation
     freq_bad = abs(freq_norm - 0.5) > 0.15
     if shed_over:
-        industrial = 0   # already over budget, don't add more shed
+        industrial = 0
+        reasoning_parts.append("Shed budget exceeded, not shedding industrial.")
     elif any_swan or freq_bad:
-        industrial = 2   # 80%
+        industrial = 2
+        reasoning_parts.append("Grid under stress, shedding industrial to 80%.")
     else:
-        industrial = 0   # 100%
+        industrial = 0
+        reasoning_parts.append("Industrial held at 100%.")
 
-    # Residential: shed more aggressively during stress
     if shed_over:
         residential = 0
+        reasoning_parts.append("Shed budget exceeded, not shedding residential.")
     elif any_swan and freq_bad:
-        residential = 3   # 60%
+        residential = 3
+        reasoning_parts.append("Severe grid stress, shedding residential to 60%.")
     elif any_swan or freq_bad:
-        residential = 2   # 70%
+        residential = 2
+        reasoning_parts.append("Grid under stress, shedding residential to 70%.")
     else:
-        residential = 0   # 100%
+        residential = 0
+        reasoning_parts.append("Residential held at 100%.")
 
-    return {"bess": bess, "hospital": hospital,
-            "industrial": industrial, "residential": residential}
+    reasoning = " ".join(reasoning_parts)
+    action = {"bess": bess, "hospital": hospital, "industrial": industrial, "residential": residential}
+    return action, reasoning
 
-
-# ── LLM action selection ───────────────────────────────────────────────────────
+def _heuristic_action(obs) -> dict:
+    act, _ = _heuristic_action_with_reasoning(obs)
+    return act
 
 _SYSTEM_PROMPT = """You are an expert energy grid dispatch operator managing a 500kW microgrid.
-Given the normalized grid observation vector, output EXACTLY one JSON object (no markdown):
+Given the 22-dimensional normalized grid observation vector, output EXACTLY one JSON object (no markdown):
 {
   "bess":        <int 0-5>,  // 0=Idle,1=Charge25%,2=Charge50%,3=Dis25%,4=Dis50%,5=Dis100%
   "hospital":    <int 0-1>,  // 0=100% supply, 1=98% (emergency only)
@@ -166,13 +169,13 @@ Given the normalized grid observation vector, output EXACTLY one JSON object (no
   "residential": <int 0-3>   // 0=100%, 1=85%, 2=70%, 3=60%
 }
 Rules: Hospital MUST be served >=95% always (3 consecutive failures = episode termination).
-During black swans, shed industrial/residential aggressively and discharge BESS."""
-
+During black swans, shed industrial/residential aggressively and discharge BESS.
+Leverage the 1h and 3h forecasts to manage the battery proactively."""
 
 def _llm_action(obs) -> dict:
     vec = obs.to_vector() if hasattr(obs, "to_vector") else []
     user_msg = (
-        f"Obs vector (18 values): {[round(v, 3) for v in vec]}\n"
+        f"Obs vector (22 values): {[round(v, 3) for v in vec]}\n"
         f"solar_swan={obs.solar_swan_active:.0f} wind_swan={obs.wind_swan_active:.0f} "
         f"soc={obs.battery_soc:.2f} freq_norm={obs.frequency_norm:.3f}\n"
         f"hosp_ratio={obs.hosp_served_ratio:.3f} ind_ratio={obs.ind_served_ratio:.3f} "
@@ -203,20 +206,17 @@ def _llm_action(obs) -> dict:
     except Exception:
         return _heuristic_action(obs)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Task 1 — Cost Minimization (8-hour, stable conditions)
 # ══════════════════════════════════════════════════════════════════════════════
-
 def run_task1(episode: int = 1) -> tuple[float, int]:
     print(f"[START] task=cost_minimization episode={episode}")
     env = _make_env()
     with env:
-        result = env.reset(seed=42)
+        result = env.reset(seed=42, scenario=0)
         obs = result.observation
 
-        # Threshold: importing 30% of MAX_IMPORT_KW for 8h at avg ₹5/kWh
-        threshold_cost = 500.0 * 0.30 * 8 * 0.005   # kW × h × ₹/kWh (×1e-3 factor baked in)
+        threshold_cost = 500.0 * 0.30 * 8 * 0.005
         steps = 0
 
         for step in range(8):
@@ -230,8 +230,7 @@ def run_task1(episode: int = 1) -> tuple[float, int]:
                   f"{action.industrial},{action.residential}]"
                   f" reward={reward:.4f} done={done}")
             steps += 1
-            if done:
-                break
+            if done: break
 
         state = env.state()
         actual_cost = state.total_cost
@@ -239,16 +238,14 @@ def run_task1(episode: int = 1) -> tuple[float, int]:
         print(f"[END] task=cost_minimization score={score:.4f} steps={steps}")
         return score, steps
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Task 2 — Hospital Resilience (24-hour, black swans enabled)
 # ══════════════════════════════════════════════════════════════════════════════
-
 def run_task2(episode: int = 1) -> tuple[float, int]:
     print(f"[START] task=hospital_resilience episode={episode}")
     env = _make_env()
     with env:
-        result = env.reset(seed=123)
+        result = env.reset(seed=123, scenario=0)
         obs = result.observation
         steps = 0
 
@@ -263,28 +260,24 @@ def run_task2(episode: int = 1) -> tuple[float, int]:
                   f"{action.industrial},{action.residential}]"
                   f" reward={reward:.4f} done={done}")
             steps += 1
-            if done:
-                break
+            if done: break
 
         state = env.state()
         hosp_fail  = state.hospital_failure_steps
         terminal   = state.hospital_terminal_triggered
-        # Score: 1 - (fail_steps/24) - 0.3 * terminal
         raw = 1.0 - hosp_fail / max(steps, 1) - (0.3 if terminal else 0.0)
         score = round(max(0.0, min(1.0, raw)), 4)
         print(f"[END] task=hospital_resilience score={score:.4f} steps={steps}")
         return score, steps
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Task 3 — Renewable Maximization (24-hour, full stochastic)
 # ══════════════════════════════════════════════════════════════════════════════
-
 def run_task3(episode: int = 1) -> tuple[float, int]:
     print(f"[START] task=renewable_maximization episode={episode}")
     env = _make_env()
     with env:
-        result = env.reset(seed=777)
+        result = env.reset(seed=777, scenario=2) # Test on storm scenario
         obs = result.observation
         total_renew_served = 0.0
         steps = 0
@@ -301,46 +294,93 @@ def run_task3(episode: int = 1) -> tuple[float, int]:
             print(f"[STEP] step={step+1} action=[{action.bess},{action.hospital},"
                   f"{action.industrial},{action.residential}]"
                   f" reward={reward:.4f} done={done}")
-            if done:
-                break
+            if done: break
 
         state = env.state()
         avg_renew = (state.renewable_energy_used / max(steps, 1)) / (200 + 150)
         stability = max(0.0, 1.0 - state.frequency_violation_steps / max(steps, 1))
-        shed_ratio = (state.total_energy_shed_kwh
-                      / max(state.total_energy_demanded_kwh, 1.0))
+        shed_ratio = (state.total_energy_shed_kwh / max(state.total_energy_demanded_kwh, 1.0))
         shed_score = max(0.0, 1.0 - shed_ratio / 0.20)
 
-        composite = (0.4 * min(1.0, avg_renew)
-                     + 0.4 * stability
-                     + 0.2 * shed_score)
+        composite = (0.4 * min(1.0, avg_renew) + 0.4 * stability + 0.2 * shed_score)
         score = round(max(0.0, min(1.0, composite)), 4)
         print(f"[END] task=renewable_maximization score={score:.4f} steps={steps}")
         return score, steps
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Generate SFT Trajectories
+# ══════════════════════════════════════════════════════════════════════════════
+def generate_trajectories(num_episodes: int = 500, output_file: str = "grid_expert_sft.jsonl"):
+    print(f"Generating {num_episodes} expert SFT trajectories...")
+    env = _make_env()
+    written_count = 0
+    with open(output_file, 'w') as f:
+        with env:
+            for ep in range(num_episodes):
+                scenario_probs = [0.5, 0.15, 0.15, 0.15, 0.05]
+                scenario = random.choices(range(5), weights=scenario_probs)[0]
+                
+                result = env.reset(seed=ep, scenario=scenario)
+                obs = result.observation
+                
+                for step in range(24):
+                    # For SFT, format the prompt and completion
+                    vec_str = [round(v, 3) for v in obs.to_vector()]
+                    prompt = (
+                        f"Obs vector (22 values): {vec_str}\n"
+                        f"solar_swan={obs.solar_swan_active:.0f} wind_swan={obs.wind_swan_active:.0f} "
+                        f"soc={obs.battery_soc:.2f} freq_norm={obs.frequency_norm:.3f}\n"
+                        f"hosp_ratio={obs.hosp_served_ratio:.3f} ind_ratio={obs.ind_served_ratio:.3f} "
+                        f"res_ratio={obs.res_served_ratio:.3f}\nWhat is your dispatch decision?"
+                    )
+                    
+                    act_dict, reasoning = _heuristic_action_with_reasoning(obs)
+                    action = _action_from_dict(act_dict)
+                    
+                    completion = (
+                        f"### Thought: {reasoning}\n"
+                        f"### Action: [{act_dict['bess']}, {act_dict['hospital']}, {act_dict['industrial']}, {act_dict['residential']}]"
+                    )
+                    
+                    f.write(json.dumps({
+                        "prompt": _SYSTEM_PROMPT + "\n\n" + prompt,
+                        "completion": completion
+                    }) + "\n")
+                    written_count += 1
+                    
+                    result = env.step(action)
+                    obs = result.observation
+                    if result.done: break
+                
+                if (ep + 1) % 50 == 0:
+                    print(f"  ... completed {ep + 1}/{num_episodes} episodes")
+                    
+    print(f"Successfully wrote {written_count} steps to {output_file}")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Main
-# ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
+    if "--generate-sft" in sys.argv:
+        _start_server()
+        try:
+            generate_trajectories()
+        finally:
+            _stop_server()
+        return
+
     t0 = time.time()
     _start_server()
     try:
         scores: dict[str, float] = {}
-
         s1, st1 = run_task1(episode=1)
         scores["cost_minimization"] = s1
-
         s2, st2 = run_task2(episode=1)
         scores["hospital_resilience"] = s2
-
         s3, st3 = run_task3(episode=1)
         scores["renewable_maximization"] = s3
 
         elapsed = time.time() - t0
         print(f"\n{'='*60}")
-        print(f"  Energy Grid v2 Baseline Results  ({elapsed:.0f}s)")
+        print(f"  Energy Grid v2.1 Baseline Results  ({elapsed:.0f}s)")
         print(f"{'='*60}")
         thresholds = {"cost_minimization": 0.70,
                       "hospital_resilience": 0.80,

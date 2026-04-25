@@ -1,9 +1,19 @@
 """
-Data models for the Energy Grid Environment — v2 (Multi-Sector Upgrade).
+Data models for the Energy Grid Environment — v2.1 (22-Dim Observation).
 
 Action space  : 4-dimensional MultiDiscreteAction vector
-Observation   : 18-element normalized float vector [0, 1]
+Observation   : 22-element normalized float vector [0, 1]
 State         : Extended GridState with per-sector and black-swan tracking
+
+Observation vector — 8 functional blocks (22 total):
+  Block 1  — Temporal Context         (fields  1-2 )  sin/cos time encoding
+  Block 2  — Real-Time Generation     (fields  3-4 )  solar, wind normalized
+  Block 3  — Energy Storage State     (fields  5-6 )  SoC, BESS health
+  Block 4  — Sector Demand/Perf       (fields  7-12)  per-sector demand + served ratios
+  Block 5  — Grid Physics             (fields 13-14)  frequency norm, grid import norm
+  Block 6  — Emergency Flags          (fields 15-16)  solar/wind black-swan binary flags
+  Block 7  — Episode Context          (fields 17-18)  step progress, shed budget ratio
+  Block 8  — Predictive Forecasts     (fields 19-22)  solar/wind at t+1h and t+3h
 
 OpenEnv type hierarchy:
   GridAction       extends Action         (+ metadata)
@@ -31,7 +41,7 @@ class GridAction(Action):
                      0=Idle  1=Charge25%  2=Charge50%
                      3=Discharge25%  4=Discharge50%  5=Discharge100%
     hospital    int  Hospital supply level
-                     0=100%  1=98% (emergency safety margin)
+                     0=100%  1=98% (emergency safety margin only)
     industrial  int  Industrial supply level
                      0=100%  1=90%  2=80%  3=70%
     residential int  Residential supply level
@@ -51,7 +61,7 @@ class GridAction(Action):
         default=0,
         ge=0,
         le=1,
-        description="Hospital supply level: 0=100%, 1=98% (emergency margin).",
+        description="Hospital supply level: 0=100%, 1=98% (emergency margin only).",
     )
     industrial: int = Field(
         default=0,
@@ -115,82 +125,99 @@ BESS_MAP: List[tuple] = [
 
 
 # ---------------------------------------------------------------------------
-# Observation Model — 18-element normalized vector + rich raw fields
+# Observation Model — 22-element normalized vector + rich raw fields
 # ---------------------------------------------------------------------------
 
 class GridObservation(Observation):
     """
-    Normalized observation vector for the upgraded energy-grid environment.
+    Normalized 22-element observation vector for the energy-grid environment v2.1.
 
     All scalar fields are in [0, 1] unless noted.
     Inherits `done`, `reward`, `metadata` from Observation base.
+
+    BLOCK LAYOUT
+    ============
+    Block 1  — Temporal Context       (2 fields,  idx 0-1)
+    Block 2  — Real-Time Generation   (2 fields,  idx 2-3)
+    Block 3  — Energy Storage State   (2 fields,  idx 4-5)
+    Block 4  — Sector Demand/Perf     (6 fields,  idx 6-11)
+    Block 5  — Grid Physics           (2 fields,  idx 12-13)
+    Block 6  — Emergency Flags        (2 fields,  idx 14-15)
+    Block 7  — Episode Context        (2 fields,  idx 16-17)
+    Block 8  — Predictive Forecasts   (4 fields,  idx 18-21)
+                                      TOTAL = 22
     """
 
-    # ── Time encoding ──────────────────────────────────────────────────────
-    time_sin: float = Field(default=0.0, description="sin(2πt/24) ∈ [-1,1].")
-    time_cos: float = Field(default=1.0, description="cos(2πt/24) ∈ [-1,1].")
+    # ── Block 1: Temporal Context ───────────────────────────────────────────
+    time_sin: float = Field(
+        default=0.0,
+        description="sin(2π * hour / 24). Encodes cyclic time without a discontinuity.",
+    )
+    time_cos: float = Field(
+        default=1.0,
+        description="cos(2π * hour / 24). Combined with time_sin gives full phase.",
+    )
 
-    # ── Generation ─────────────────────────────────────────────────────────
+    # ── Block 2: Real-Time Generation ──────────────────────────────────────
     solar_norm: float = Field(
         default=0.0, ge=0.0, le=1.0,
-        description="P_solar / 200 kW.",
+        description="P_solar / P_solar_max (200kW). Current solar output normalized.",
     )
     wind_norm: float = Field(
         default=0.0, ge=0.0, le=1.0,
-        description="P_wind / 150 kW.",
+        description="P_wind / P_wind_max (150kW). Current wind output normalized.",
     )
 
-    # ── BESS ───────────────────────────────────────────────────────────────
+    # ── Block 3: Energy Storage State ──────────────────────────────────────
     battery_soc: float = Field(
         default=0.5, ge=0.0, le=1.0,
-        description="State of charge [0, 1].",
+        description="BESS State of Charge [0, 1]. Naturally dimensionless.",
     )
     bess_health: float = Field(
         default=1.0, ge=0.0, le=1.0,
-        description="BESS cycle-life health proxy [0, 1].",
+        description="BESS cycle-life health proxy [0, 1]. Degrades from 1.0 to 0.0.",
     )
 
-    # ── Hospital sector ────────────────────────────────────────────────────
+    # ── Block 4: Sector Demand & Performance ───────────────────────────────
     hosp_demand_norm: float = Field(
         default=0.0, ge=0.0, le=1.0,
-        description="Hospital demand / 500 kW.",
+        description="Hospital demand / 500kW (total microgrid capacity).",
     )
     hosp_served_ratio: float = Field(
         default=1.0, ge=0.0, le=1.0,
-        description="Fraction of hospital demand actually served.",
+        description="Hospital: Load_Served / Load_Demand. Must stay >= 0.95.",
     )
-
-    # ── Industrial sector ──────────────────────────────────────────────────
     ind_demand_norm: float = Field(
         default=0.0, ge=0.0, le=1.0,
-        description="Industrial demand / 500 kW.",
+        description="Industrial demand / 500kW.",
     )
     ind_served_ratio: float = Field(
         default=1.0, ge=0.0, le=1.0,
-        description="Fraction of industrial demand actually served.",
+        description="Industrial: Load_Served / Load_Demand.",
     )
-
-    # ── Residential sector ─────────────────────────────────────────────────
     res_demand_norm: float = Field(
         default=0.0, ge=0.0, le=1.0,
-        description="Residential demand / 500 kW.",
+        description="Residential demand / 500kW.",
     )
     res_served_ratio: float = Field(
         default=1.0, ge=0.0, le=1.0,
-        description="Fraction of residential demand actually served.",
+        description="Residential: Load_Served / Load_Demand.",
     )
 
-    # ── Grid physics ───────────────────────────────────────────────────────
+    # ── Block 5: Grid Physics & Stability ──────────────────────────────────
     frequency_norm: float = Field(
         default=0.5, ge=0.0, le=1.0,
-        description="(frequency − 49.0) / 2.0; maps 49–51 Hz → 0–1.",
+        description=(
+            "(frequency - 49.0) / 2.0. Maps 49–51 Hz → 0.0–1.0. "
+            "0.5 = nominal 50 Hz."
+        ),
     )
     grid_import_norm: float = Field(
         default=0.0, ge=0.0, le=1.0,
-        description="Grid import / 500 kW.",
+        description="Net grid import / 500kW. 0.0 = fully islanded, 1.0 = full import.",
     )
 
-    # ── Black-swan flags ───────────────────────────────────────────────────
+    # ── Block 6: Emergency & Stochastic Flags ──────────────────────────────
     solar_swan_active: float = Field(
         default=0.0, ge=0.0, le=1.0,
         description="1.0 if solar-collapse black-swan is active, else 0.0.",
@@ -200,29 +227,94 @@ class GridObservation(Observation):
         description="1.0 if wind-failure black-swan is active, else 0.0.",
     )
 
-    # ── Episode progress & budget ──────────────────────────────────────────
+    # ── Block 7: Episode Context & Constraints ─────────────────────────────
     step_norm: float = Field(
         default=0.0, ge=0.0, le=1.0,
-        description="step / 24.",
+        description="step / 24. Normalized episode progress [0, 1].",
     )
     cumulative_shed_ratio_norm: float = Field(
         default=0.0,
-        description="(cumulative_shed_ratio / 0.20); >1.0 means over budget.",
+        description=(
+            "cumulative_shed_ratio / 0.20. "
+            "Values > 1.0 indicate the 20% shedding budget is exceeded."
+        ),
+    )
+
+    # ── Block 8: Predictive Forecasts ──────────────────────────────────────
+    forecast_solar_1h: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description=(
+            "Noisy forecast of solar output 1 hour ahead, normalized by 200kW. "
+            "10-15% Gaussian noise applied to force uncertainty management."
+        ),
+    )
+    forecast_solar_3h: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description=(
+            "Noisy forecast of solar output 3 hours ahead, normalized by 200kW. "
+            "Higher noise than 1h due to extended horizon uncertainty."
+        ),
+    )
+    forecast_wind_1h: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description=(
+            "Noisy forecast of wind output 1 hour ahead, normalized by 150kW. "
+            "10-15% Gaussian noise applied."
+        ),
+    )
+    forecast_wind_3h: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description=(
+            "Noisy forecast of wind output 3 hours ahead, normalized by 150kW. "
+            "Higher noise than 1h due to extended horizon uncertainty."
+        ),
     )
 
     def to_vector(self) -> List[float]:
-        """Return the canonical 18-element observation vector."""
+        """
+        Return the canonical 22-element observation vector.
+
+        Order matches the 8-block specification exactly:
+          [0-1]   Block 1: Temporal
+          [2-3]   Block 2: Generation
+          [4-5]   Block 3: BESS
+          [6-11]  Block 4: Sectors (hosp, ind, res — demand + served each)
+          [12-13] Block 5: Physics
+          [14-15] Block 6: Flags
+          [16-17] Block 7: Episode
+          [18-21] Block 8: Forecasts (solar_1h, solar_3h, wind_1h, wind_3h)
+        """
         return [
-            self.time_sin, self.time_cos,
-            self.solar_norm, self.wind_norm,
-            self.battery_soc, self.bess_health,
-            self.hosp_demand_norm, self.hosp_served_ratio,
-            self.ind_demand_norm, self.ind_served_ratio,
-            self.res_demand_norm, self.res_served_ratio,
-            self.frequency_norm, self.grid_import_norm,
-            self.solar_swan_active, self.wind_swan_active,
+            # Block 1 — Temporal
+            self.time_sin,
+            self.time_cos,
+            # Block 2 — Generation
+            self.solar_norm,
+            self.wind_norm,
+            # Block 3 — BESS
+            self.battery_soc,
+            self.bess_health,
+            # Block 4 — Sectors
+            self.hosp_demand_norm,
+            self.hosp_served_ratio,
+            self.ind_demand_norm,
+            self.ind_served_ratio,
+            self.res_demand_norm,
+            self.res_served_ratio,
+            # Block 5 — Physics
+            self.frequency_norm,
+            self.grid_import_norm,
+            # Block 6 — Flags
+            self.solar_swan_active,
+            self.wind_swan_active,
+            # Block 7 — Episode
             self.step_norm,
             self.cumulative_shed_ratio_norm,
+            # Block 8 — Forecasts
+            self.forecast_solar_1h,
+            self.forecast_solar_3h,
+            self.forecast_wind_1h,
+            self.forecast_wind_3h,
         ]
 
 
@@ -232,10 +324,19 @@ class GridObservation(Observation):
 
 class GridState(State):
     """
-    Episode-level metadata — upgraded for multi-sector, black-swan tracking.
+    Episode-level metadata — upgraded for multi-sector, scenario, and black-swan tracking.
 
     Inherits `episode_id` and `step_count` from State base.
     """
+
+    # Scenario tracking
+    scenario_id: int = Field(
+        default=0, ge=0, le=4,
+        description=(
+            "Active scenario: 0=Normal, 1=Heatwave, 2=Storm, 3=Surge, 4=Fault. "
+            "Set at reset(); never exposed in the observation vector."
+        ),
+    )
 
     # Cumulative rewards / costs
     cumulative_reward: float = Field(
@@ -244,13 +345,13 @@ class GridState(State):
     )
     total_cost: float = Field(
         default=0.0, ge=0.0,
-        description="Total ₹ spent on grid imports in this episode.",
+        description="Total cost incurred from grid imports in this episode.",
     )
 
     # Hospital tracking
     hospital_failure_steps: int = Field(
         default=0, ge=0,
-        description="Steps where hospital served ratio < 0.95.",
+        description="Total steps where hospital served ratio < 0.95.",
     )
     consecutive_hospital_failures: int = Field(
         default=0, ge=0,
@@ -258,17 +359,17 @@ class GridState(State):
     )
     hospital_terminal_triggered: bool = Field(
         default=False,
-        description="True if episode ended due to 3 consecutive hospital failures.",
+        description="True if episode ended due to 3 consecutive hospital failures (V1 terminal).",
     )
 
     # Shed budget tracking
     total_energy_shed_kwh: float = Field(
         default=0.0, ge=0.0,
-        description="Cumulative kWh shed across all sectors.",
+        description="Cumulative kWh shed across all sectors this episode.",
     )
     total_energy_demanded_kwh: float = Field(
         default=0.0, ge=0.0,
-        description="Cumulative kWh demanded across all sectors.",
+        description="Cumulative kWh demanded across all sectors this episode.",
     )
 
     # Renewable tracking
@@ -280,13 +381,13 @@ class GridState(State):
     # Frequency
     frequency_violation_steps: int = Field(
         default=0, ge=0,
-        description="Steps where |freq − 50| > 0.5 Hz.",
+        description="Steps where |freq − 50| > 0.5 Hz (V2 hard zone).",
     )
 
     # BESS health
     bess_health: float = Field(
         default=1.0, ge=0.0, le=1.0,
-        description="Running BESS cycle-life health proxy [0,1].",
+        description="Running BESS cycle-life health proxy [0, 1].",
     )
 
     # Black-swan event tracking
@@ -303,6 +404,24 @@ class GridState(State):
         description="Steps remaining for wind-failure black-swan.",
     )
 
+    # Verifier logs (logged separately per spec)
+    v1_triggers: int = Field(
+        default=0, ge=0,
+        description="Count of V1 (hospital) penalty activations this episode.",
+    )
+    v2_triggers: int = Field(
+        default=0, ge=0,
+        description="Count of V2 (frequency > 0.5Hz) hard-zone violations this episode.",
+    )
+    v3_triggers: int = Field(
+        default=0, ge=0,
+        description="Count of V3 (BESS SoC out-of-bounds) penalty activations.",
+    )
+    v4_triggers: int = Field(
+        default=0, ge=0,
+        description="Count of V4 (shed budget exceeded) penalty activations.",
+    )
+
     # Legacy / grader compatibility
     blackout_count: int = Field(
         default=0, ge=0,
@@ -314,5 +433,5 @@ class GridState(State):
     )
     demand_spike_hours: Optional[list] = Field(
         default=None,
-        description="Legacy: hours with amplified demand (unused in v2).",
+        description="Surge scenario: hours with demand spike active.",
     )
