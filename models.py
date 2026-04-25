@@ -233,10 +233,10 @@ class GridObservation(Observation):
         description="step / 24. Normalized episode progress [0, 1].",
     )
     cumulative_shed_ratio_norm: float = Field(
-        default=0.0,
+        default=0.0, ge=0.0, le=1.0,
         description=(
-            "cumulative_shed_ratio / 0.20. "
-            "Values > 1.0 indicate the 20% shedding budget is exceeded."
+            "cumulative_shed_ratio / 0.20, clamped to 1.0. "
+            "Values near 1.0 indicate the 20% shedding budget is almost exceeded."
         ),
     )
 

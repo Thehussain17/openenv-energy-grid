@@ -402,8 +402,9 @@ class EnergyGridEnvironment(Environment[GridAction, GridObservation, GridState])
 
         excess_shed = max(0.0, cum_shed_ratio - 0.20)
         if excess_shed > 0: self._state.v4_triggers += 1
-        v4_budget = -100.0 * excess_shed
-        v4_friction = -5.0 * (shed_this_step / max(total_demand, 1.0))
+        # Order of magnitude smaller than Hospital (-1000) to avoid hesitation
+        v4_budget = -10.0 * excess_shed
+        v4_friction = -0.5 * (shed_this_step / max(total_demand, 1.0))
         v4 = v4_budget + v4_friction
 
         core = ((1.0 * h_ratio + 0.6 * i_ratio + 0.3 * r_ratio) * 100.0
@@ -441,7 +442,7 @@ class EnergyGridEnvironment(Environment[GridAction, GridObservation, GridState])
             solar_swan_active=1.0 if self._solar_swan_active else 0.0,
             wind_swan_active=1.0 if self._wind_swan_active else 0.0,
             step_norm=round(min(1.0, step / 24), 4),
-            cumulative_shed_ratio_norm=round(cum_shed_ratio / 0.20, 4),
+            cumulative_shed_ratio_norm=round(min(1.0, cum_shed_ratio / 0.20), 4),
             forecast_solar_1h=round(s_fc[0] / MAX_SOLAR_KW, 4),
             forecast_solar_3h=round(s_fc[2] / MAX_SOLAR_KW, 4),
             forecast_wind_1h=round(w_fc[0] / MAX_WIND_KW, 4),
