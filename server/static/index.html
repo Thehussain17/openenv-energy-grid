@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Smart Grid Orchestrator</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Google Fonts for modern typography -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+    <!-- 3D Canvas Background -->
+    <div id="canvas-container"></div>
+
+    <!-- Glassmorphism Dashboard Overlay -->
+    <div id="dashboard">
+        <header>
+            <h1>Energy Grid <span class="badge">v2.1</span></h1>
+            <div class="controls">
+                <button id="btn-reset" class="btn outline">Reset Simulation</button>
+                <button id="btn-step" class="btn primary">Step Inference</button>
+                <button id="btn-auto" class="btn accent">Auto-Run</button>
+            </div>
+        </header>
+
+        <!-- Main Stats Grid -->
+        <div class="stats-grid">
+            <!-- Grid Physics -->
+            <div class="card glass">
+                <h3>Grid Physics</h3>
+                <div class="stat-row">
+                    <span class="label">Frequency</span>
+                    <span id="val-freq" class="value">50.00 Hz</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div id="bar-freq" class="progress-bar" style="width: 50%;"></div>
+                </div>
+                <div class="stat-row mt-2">
+                    <span class="label">Net Import</span>
+                    <span id="val-import" class="value">0.0%</span>
+                </div>
+            </div>
+
+            <!-- BESS & Storage -->
+            <div class="card glass">
+                <h3>Energy Storage (BESS)</h3>
+                <div class="stat-row">
+                    <span class="label">State of Charge</span>
+                    <span id="val-soc" class="value">50.0%</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div id="bar-soc" class="progress-bar safe" style="width: 50%;"></div>
+                </div>
+                <div class="stat-row mt-2">
+                    <span class="label">Battery Health</span>
+                    <span id="val-health" class="value">100.0%</span>
+                </div>
+            </div>
+
+            <!-- Sector Status -->
+            <div class="card glass double-col">
+                <h3>Sector Demands & Supply</h3>
+                <div class="sectors">
+                    <!-- Hospital -->
+                    <div class="sector-item" id="sector-hosp">
+                        <h4>Hospital <span class="tag critical">Vital</span></h4>
+                        <div class="stat-row">
+                            <span>Demand: <b id="dem-hosp">0%</b></span>
+                            <span>Served: <b id="srv-hosp">100%</b></span>
+                        </div>
+                        <div class="progress-bar-container mini">
+                            <div id="bar-hosp" class="progress-bar safe" style="width: 100%;"></div>
+                        </div>
+                    </div>
+                    <!-- Industrial -->
+                    <div class="sector-item" id="sector-ind">
+                        <h4>Industrial</h4>
+                        <div class="stat-row">
+                            <span>Demand: <b id="dem-ind">0%</b></span>
+                            <span>Served: <b id="srv-ind">100%</b></span>
+                        </div>
+                        <div class="progress-bar-container mini">
+                            <div id="bar-ind" class="progress-bar safe" style="width: 100%;"></div>
+                        </div>
+                    </div>
+                    <!-- Residential -->
+                    <div class="sector-item" id="sector-res">
+                        <h4>Residential</h4>
+                        <div class="stat-row">
+                            <span>Demand: <b id="dem-res">0%</b></span>
+                            <span>Served: <b id="srv-res">100%</b></span>
+                        </div>
+                        <div class="progress-bar-container mini">
+                            <div id="bar-res" class="progress-bar safe" style="width: 100%;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Black Swan Alerts -->
+        <div id="alerts-container">
+            <div id="alert-solar" class="alert hidden">⚠️ SOLAR COLLAPSE DETECTED</div>
+            <div id="alert-wind" class="alert hidden">⚠️ WIND TURBINE FAILURE</div>
+        </div>
+
+        <!-- Episode Info Footer -->
+        <footer>
+            <div class="step-info">
+                <span>Time: <b id="val-time">00:00</b></span>
+                <span>Step: <b id="val-step">0 / 24</b></span>
+            </div>
+            <div class="reward-info">
+                <span>Cumulative Reward: <b id="val-reward">0.00</b></span>
+                <span>Shed Budget: <b id="val-shed">0.0%</b></span>
+            </div>
+        </footer>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>

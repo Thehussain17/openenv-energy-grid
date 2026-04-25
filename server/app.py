@@ -47,6 +47,19 @@ app = create_app(
     max_concurrent_envs=4,
 )
 
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
+
+# Ensure the static directory exists
+static_dir = _os.path.join(_os.path.dirname(__file__), "static")
+_os.makedirs(static_dir, exist_ok=True)
+
+app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
+
+@app.get("/")
+async def root_redirect():
+    return RedirectResponse(url="/ui/index.html")
+
 
 def main(host: str = "0.0.0.0", port: int = 7860) -> None:
     """
