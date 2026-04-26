@@ -88,7 +88,7 @@ def generate_trajectories(
     for ep in range(num_episodes):
         scenario = scenarios[ep % len(scenarios)]
         episode_seed = seed + (ep * 17) + scenario
-        obs, _ = env.reset(seed=episode_seed, scenario=scenario)
+        obs = env.reset(seed=episode_seed, scenario=scenario)
         done = False
 
         while not done:
