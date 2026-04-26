@@ -155,7 +155,7 @@ class EnergyGridEnvironment(Environment[GridAction, GridObservation, GridState])
             demand_spike_hours=list(range(self._surge_start, self._surge_end)) if self._surge_start != -1 else None
         )
 
-        return self._build_obs(hour=0, reward=0.0, done=False), self._state.dict()
+        return self._build_obs(hour=0, reward=0.0, done=False)
 
     def _solar(self, hour: int) -> float:
         raw = math.sin(math.pi * (hour - 6) / 12.0)
