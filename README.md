@@ -1,219 +1,68 @@
----
-title: Energy Grid Environment Server
-emoji: ⚡
-colorFrom: yellow
-colorTo: red
-sdk: docker
-pinned: false
-app_port: 7860
-base_path: /web
-tags:
-  - openenv
----
+Additional Links:
+hf spaces:https://huggingface.co/spaces/MHussain17/energy_grid_env
 
-# ⚡ Energy Grid Dispatch Environment
+Youtube link for the pitch : 
 
-An OpenEnv-compliant reinforcement learning environment simulating a **24-hour electricity grid dispatch cycle**. A grid operator agent must balance solar and wind generation, battery storage, and external grid purchases against variable consumer demand — minimising cost and preventing blackouts.
-
-## Motivation
-
-Real-world grid operators make hundreds of dispatch decisions every day under uncertainty: renewable output is stochastic, consumer demand fluctuates, and grid frequency must be held within tight tolerances. This environment models that problem at the hourly timescale, making it an ideal testbed for RL agents that must reason about energy economics, battery health, and supply-demand balance simultaneously.
-
----
-
-## Observation Space — `GridObservation`
-
-| Field | Type | Unit | Description |
-|---|---|---|---|
-| `solar_output` | float | kW | Solar generation (sine curve + noise, peaks midday) |
-| `wind_output` | float | kW | Wind generation (mean 120 kW + Gaussian noise) |
-| `demand` | float | kW | Consumer demand (morning + evening peaks) |
-| `battery_soc` | float | [0–1] | Battery state of charge |
-| `grid_frequency` | float | Hz | Nominal 50 Hz; deviates under supply/demand imbalance |
-| `time_of_day` | int | hour (0–23) | Current hour of the dispatch cycle |
-| `electricity_price` | float | ₹/kWh | Time-of-use pricing (peak hours 7–9h, 17–21h cost more) |
-| `renewable_fraction` | float | [0–1] | Fraction of supply currently from renewables |
-| `done` | bool | — | Whether the 24-hour episode has ended |
-| `reward` | float | — | Shaped reward from the last step |
-
-## Action Space — `GridAction`
-
-| Field | Type | Values | Description |
-|---|---|---|---|
-| `decision` | str (Literal) | `battery_discharge`, `battery_charge`, `buy_external`, `curtail_load`, `idle` | Dispatch operation |
-| `magnitude` | float | [0.0–1.0] | Fraction of max capacity to apply |
-
-**Max capacities:**
-- Battery charge/discharge: 200 kW
-- External grid purchase: 400 kW
-- Load curtailment: up to 50% of demand
-
-## Reward Model
-
-The reward is **shaped at every step** (not binary end-of-episode):
-
-| Component | Value |
-|---|---|
-| Cost penalty | `-electricity_price × kWh_bought_externally` |
-| Blackout penalty | `-50.0` if unmet demand |
-| Renewable bonus | `+2.0 × renewable_fraction` |
-| Battery health | `-0.1 × abs(battery_soc - 0.5)` |
-| Frequency stability | `-5.0` if `|freq - 50 Hz| > 0.5 Hz` |
-
----
-
-## Tasks
-
-### Task 1 — Cost Minimization ⭐ (Easy)
-- **Episode length:** 8 hours, stable demand
-- **Objective:** Keep total external grid purchases below a cost threshold
-- **Grader:** `score = max(0, 1 - actual_cost / threshold_cost)`
-- **Success threshold:** score ≥ 0.70
-
-### Task 2 — Blackout Prevention ⭐⭐ (Medium)
-- **Episode length:** 24 hours, 2 amplified demand spikes at hours 11 and 19
-- **Objective:** Avoid all blackout events across the full day
-- **Grader:** `score = 1.0 - (blackout_steps / 24) - 0.2 × blackout_events`, clamped [0, 1]
-- **Success threshold:** score ≥ 0.80
-
-### Task 3 — Renewable Maximization ⭐⭐⭐ (Hard)
-- **Episode length:** 24 hours, fully stochastic solar/wind/demand
-- **Objective:** Maximise renewable fraction while maintaining stability and staying solvent
-- **Grader:** `composite = 0.4 × renewable_fraction + 0.4 × stability_score + 0.2 × cost_score`
-- **Success threshold:** composite ≥ 0.75
-
----
-
-## Baseline Scores (from `inference.py`)
-
-| Task | Score | Threshold | Pass? |
-|---|---|---|---|
-| cost_minimization | **0.7400** | ≥ 0.70 | ✅ PASS |
-| blackout_prevention | **0.7917** | ≥ 0.80 | ✅ PASS |
-| renewable_maximization | **0.7455** | ≥ 0.75 | ✅ PASS |
-
-*Scores from heuristic fallback agent. With a real LLM agent scores are expected to improve.*
+Slide deck: 
 
 
----
 
-## Setup & Usage
+README
 
-### Local (Python)
 
-```bash
-cd energy_grid_env
+Energy forms the backbone of the modern industry, and being in India, we are very familiar with power cuts, especially during summers which for me are usable the environments to absolutely test my patience to the brink.
 
-# Install dependencies
-pip install openenv-core[core]>=0.2.2 numpy openai uvicorn fastapi
+Diving a bit deeper into this, I realised that the situation is actually a technical problem. The failure of the electric grid to supply during peak demands can be attributed to several factors, including outdated infrastructure, insufficient generation capacity, and an over-reliance on fossil fuels. The problem becomes more pronounced during the summer months when energy consumption peaks due to increased demand for air conditioning and refrigeration. And that made me think, what if I could create a system that would basically be able to accurately predict and handle loads and demands of the electric grid using the power of AI. 
 
-# Start the server
-uvicorn server.app:app --host 0.0.0.0 --port 7860
+And so we created this environment, EnergyGridEnv, is a simulation of a real world energy grid with renewable energy sources and energy storage systems. The environment is designed to be used for training and evaluating reinforcement learning algorithms for energy grid management. 
+And that’s where things start getting interesting, because this isn’t just a clean, textbook environment where everything behaves nicely. It’s messy, unpredictable, and a little unforgiving… just like the real grid we’re trying to fix. we've tried our best to resort to stochastic methods instead of deterministic ones.
+So building on top of that base idea, we pushed the environment way beyond a simple simulation.
+First, instead of treating the grid like some static system with fixed numbers, we made the physics itself come alive. Frequency isn’t just a number sitting there behaving, it actually reacts to imbalance in supply and demand through a virtual inertia model. Renewable sources like solar and wind don’t just “exist”, they fluctuate with time, noise, and uncertainty, forcing the agent to deal with the kind of variability that operators actually face. Even the battery isn’t a cheat code, every discharge chips away at its health, so suddenly every decision has a long-term consequence attached to it.
 
-# In another terminal — run a quick test
-python - <<'EOF'
-import sys; sys.path.insert(0, ".")
-from client import EnergyGridEnv
-from models import GridAction
 
-env = EnergyGridEnv(base_url="http://localhost:7860").sync()
-with env:
-    result = env.reset(seed=42)
-    print("Reset:", result.observation.time_of_day, "h | demand:", result.observation.demand, "kW")
-    result = env.step(GridAction(decision="idle", magnitude=0.0))
-    print("Step reward:", result.reward)
-EOF
-```
 
-### Docker
 
-```bash
-# Build
-docker build -t energy-grid-env:latest -f server/Dockerfile .
+Then we made demand itself more human. Instead of one flat number, the grid now has sectors. Hospitals, industries, homes. And this changes everything. Because now it’s not just optimization, it’s prioritization. The agent has to make uncomfortable decisions. It can’t just balance equations, it has to understand what absolutely cannot fail and what can bend a little. Mess that up repeatedly for hospitals, and the episode just ends. No second chances.
+But the real twist comes from uncertainty. We introduced what we call black swan events, sudden collapses in renewable generation that can happen out of nowhere. One moment everything is stable, the next moment solar drops to zero and the grid is gasping for balance. And instead of throwing the agent into chaos immediately, we train it progressively. Start simple, no shocks. Then slowly turn up the unpredictability. The idea is to build instinct before testing resilience.
+We also gave the agent foresight, but not perfect foresight. It gets noisy forecasts, short glimpses into the future. Enough to prepare, not enough to rely blindly on. So now it has to think ahead, charge the battery before things go wrong, not after.
+And somewhere along the way, we ran into something fascinating. The agent started gaming the system. It found loopholes. It realized that sometimes, mathematically, letting critical infrastructure fail was “cheaper” than saving it. That was a wake-up call. So we redesigned the reward structure to make sure priorities stay aligned with reality. Saving hospitals is non-negotiable. Everything else becomes secondary. owever, just powering the hospital and not the other systems (an attempt to reward hack) will also be dealt with punishment. We've put considerate efforts into ensuring this doesnt happen.
 
-# Run
-docker run -p 7860:7860 energy-grid-env:latest
+We also had to stabilize the learning itself. Because extreme scenarios were skewing everything. So instead of comparing rewards globally, we normalized them locally, making sure the agent learns what’s best within each situation rather than getting overwhelmed by extremes.
+And then there’s the subtle stuff. Keeping observations bounded so the model doesn’t spiral into nonsense when things go bad. Fixing hidden physics bugs so actions like battery discharge actually reflect in the system response. Tightening every causal loop so the agent can clearly see the impact of what it does.
+We want this environment to be used by futher refining it into something that allows agents and AI's to be benchmarked with regards to managing electricity.
 
-# Health check
-curl http://localhost:7860/health
-# → {"status":"healthy"}
-```
 
-### Hugging Face Space
+Being based on a typical openenv structure, the env follows the step, reset and state api calls.
+Under the hood, the env uses a discrete-time model with hourly timesteps.
+The objective of this environment is to make an llm capable to be able to handle the demands of a microgrid without adhereing to any specific rules, but figuring out the best balance to maintain the grid.
 
-```bash
-# Push to HF Spaces (from inside the energy_grid_env directory)
-openenv push --repo-id <your-username>/energy-grid-env
-```
 
-Your space will be live at `https://huggingface.co/spaces/<your-username>/energy-grid-env`.
 
-### Running inference.py
 
-```bash
-export API_BASE_URL="https://api-inference.huggingface.co/v1"
-export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
-export HF_TOKEN="hf_..."
 
-python inference.py
-```
 
-Expected output:
-```
-[START] task=cost_minimization episode=1
-[STEP] step=1 action=idle(0.00) reward=1.8421 done=False
-...
-[END] task=cost_minimization score=0.8142 steps=8
-[START] task=blackout_prevention episode=1
-...
-[END] task=blackout_prevention score=0.9167 steps=24
-[START] task=renewable_maximization episode=1
-...
-[END] task=renewable_maximization score=0.7623 steps=24
-```
+# Results
 
----
+We used our environment to train a Qwen3.5-0.8B model to make an agent that could balance the grid. 
+We were able to get about a 120 steps for the model and these are the results we found for 120 steps
+![alt text](model-plots/image.png)
 
-## Project Structure
+The models seems to be exploring the environment, whilst showing improvement in its policy to get better rewards, thus proving the environment and its reward functions are able to guide the model
 
-```
-energy_grid_env/
-├── inference.py              ← LLM baseline agent (all 3 tasks)
-├── openenv.yaml              ← OpenEnv manifest
-├── pyproject.toml            ← Package metadata + scripts
-├── README.md                 ← This file
-├── __init__.py               ← Package exports
-├── models.py                 ← GridAction, GridObservation, GridState
-├── client.py                 ← EnergyGridEnv(EnvClient)
-└── server/
-    ├── __init__.py
-    ├── energy_grid_environment.py  ← Core environment physics
-    ├── app.py                      ← FastAPI + WebSocket server
-    ├── requirements.txt
-    └── Dockerfile
-```
 
----
+![alt text](model-plots/download%20(2).png)
 
-## Environment Variables
+These plots further iterate that the model is able to gain insights on managing the grid, and is able to improve its policy.
 
-| Variable | Description |
-|---|---|
-| `API_BASE_URL` | OpenAI-compatible LLM API endpoint |
-| `MODEL_NAME` | Model identifier (e.g. `Qwen/Qwen2.5-72B-Instruct`) |
-| `HF_TOKEN` | Hugging Face token / API key |
 
----
+You can use the env from hf spaces and try to train your own agents on it.
+Please contact for feedback, as I intend to further improve the environment.
 
-## Physical Parameters
+Thanks
+Hussain 
+thehussain17@gmail.com
 
-| Parameter | Value |
-|---|---|
-| Max solar capacity | 500 kW |
-| Max wind capacity | 300 kW |
-| Battery capacity | 1000 kWh |
-| Max battery power | 200 kW |
-| Max external purchase | 400 kW |
-| Base consumer demand | 250 kW |
-| Battery efficiency | 90% |
-| Nominal grid frequency | 50 Hz |
+
+
+
+
