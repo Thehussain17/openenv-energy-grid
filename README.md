@@ -1,3 +1,13 @@
+---
+title: Energy Grid Env
+emoji: ⚡
+colorFrom: yellow
+colorTo: orange
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 Additional Links:
 hf spaces:https://huggingface.co/spaces/MHussain17/energy_grid_env
 
