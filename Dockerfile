@@ -1,23 +1,50 @@
 # Compatible with HF Spaces (sdk: docker, app_port: 7860, tags: openenv)
 
+# Stage 1: Builder
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+# Install git, curl
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    (mv /root/.cargo/bin/uv /usr/local/bin/uv && \
+    mv /root/.cargo/bin/uvx /usr/local/bin/uvx || \
+    mv /root/.local/bin/uv /usr/local/bin/uv && \
+    mv /root/.local/bin/uvx /usr/local/bin/uvx)
+
+# Copy project files
+COPY . /app/env
+WORKDIR /app/env
+
+# Install dependencies using uv
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --python 3.11 --no-frozen --no-editable
+
+# Stage 2: Runtime
 FROM python:3.11-slim
 
-WORKDIR /app/env
+WORKDIR /app
 
 # Install curl for HEALTHCHECK
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy project files
-COPY . .
+# Copy virtualenv and project code from builder
+COPY --from=builder /app/env/.venv /app/.venv
+COPY --from=builder /app/env /app/env
 
-# Install dependencies using standard built-in pip
-# This reads pyproject.toml automagically securely across any architecture
-RUN pip install --no-cache-dir .
-
-# Set environment
+# Set environment paths
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app/env:$PYTHONPATH"
 ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app/env
 
 EXPOSE 7860
 
